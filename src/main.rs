@@ -20,13 +20,29 @@ fn main() -> io::Result<()> {
 
 struct Cmd<'a> {
     cmd: Cow<'a, str>,
+    args: Vec<Cow<'a, str>>,
 }
 
 impl<'a> Cmd<'a> {
     fn new<T: Into<Cow<'a, str>>>(value: T) -> Self {
-        Self { cmd: value.into() }
+        let cmd: Cow<'a, str> = value.into();
+        let mut iter = cmd.split_whitespace();
+        Self {
+            cmd: Cow::Owned(iter.next().unwrap().to_owned()),
+            args: iter.map(|v| Cow::Owned(v.to_owned())).collect(),
+        }
     }
     fn execute<W: io::Write>(&self, stdout: &mut W) -> io::Result<()> {
+        match self.cmd.as_ref() {
+            "exit" => std::process::exit(
+                self.args
+                    .get(0)
+                    .unwrap_or(&Cow::Borrowed("0"))
+                    .parse()
+                    .unwrap(),
+            ),
+            _ => {}
+        }
         writeln!(stdout, "{}: not found", self.cmd.trim())
     }
 }
