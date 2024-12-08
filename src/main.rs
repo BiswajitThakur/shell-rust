@@ -3,17 +3,18 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 fn main() -> io::Result<()> {
-    // Uncomment this block to pass the first stage
-    print!("$ ");
-    io::stdout().flush()?;
-
-    // Wait for user input
-    let stdin = io::stdin();
-    let mut input = String::new();
-    stdin.read_line(&mut input)?;
     let mut stdout = io::stdout().lock();
-    let cmd = Cmd::new(input);
-    cmd.execute(&mut stdout)?;
+    let stdin = io::stdin();
+    write!(stdout, "$ ")?;
+    stdout.flush()?;
+
+    for line in stdin.lines() {
+        let line = line?;
+        let cmd = Cmd::new(line.trim());
+        cmd.execute(&mut stdout)?;
+        write!(stdout, "$ ")?;
+        stdout.flush()?;
+    }
     Ok(())
 }
 
