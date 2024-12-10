@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
 use std::io::{self, Write};
-use std::{borrow::Cow, fs, process, str::FromStr};
+use std::{borrow::Cow, fs, path::PathBuf, process, str::FromStr};
 
 fn main() -> io::Result<()> {
     let mut stdout = io::stdout().lock();
@@ -27,6 +27,7 @@ enum BuildinCmd<'a> {
     Echo(Vec<Cow<'a, str>>),
     Type(Cow<'a, str>),
     Pwd,
+    Cd(Cow<'a, str>),
 }
 
 impl From<&BuildinCmd<'_>> for &str {
@@ -36,6 +37,7 @@ impl From<&BuildinCmd<'_>> for &str {
             BuildinCmd::Echo(_) => "echo",
             BuildinCmd::Type(_) => "type",
             BuildinCmd::Pwd => "pwd",
+            BuildinCmd::Cd(_) => "cd",
         }
     }
 }
@@ -69,6 +71,11 @@ impl ExecuteCmd for BuildinCmd<'_> {
             Self::Pwd => {
                 let pwd = std::env::current_dir()?;
                 writeln!(stdout, "{}", pwd.to_string_lossy())?;
+            }
+            Self::Cd(path) => {
+                if std::env::set_current_dir(PathBuf::from_str(path).unwrap()).is_err() {
+                    writeln!(stdout, "cd: {}: No such file or directory", path)?;
+                }
             }
         }
         Ok(())
@@ -104,6 +111,10 @@ impl FromStr for BuildinCmd<'_> {
                 Ok(Self::Type(Cow::Owned(arg.unwrap_or_default().to_owned())))
             }
             "pwd" => Ok(Self::Pwd),
+            "cd" => {
+                let arg = iter.next();
+                Ok(Self::Cd(Cow::Owned(arg.unwrap_or_default().to_owned())))
+            }
             _ => err,
         }
     }
