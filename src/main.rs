@@ -25,6 +25,7 @@ trait ExecuteCmd {
 enum BuildinCmd<'a> {
     Exit(i32),
     Echo(Vec<Cow<'a, str>>),
+    Type(Cow<'a, str>),
 }
 
 impl ExecuteCmd for BuildinCmd<'_> {
@@ -40,6 +41,17 @@ impl ExecuteCmd for BuildinCmd<'_> {
                     write!(stdout, " {}", arg)?;
                 }
                 writeln!(stdout)?;
+            }
+            Self::Type(cmd) => {
+                if let Ok(v) = Self::from_str(cmd) {
+                    match v {
+                        Self::Exit(_) => writeln!(stdout, "exit is a shell builtin")?,
+                        Self::Echo(_) => writeln!(stdout, "echo is a shell builtin")?,
+                        Self::Type(_) => writeln!(stdout, "type is a shell builtin")?,
+                    }
+                } else {
+                    writeln!(stdout, "{}: not found", cmd)?;
+                }
             }
         }
         Ok(())
@@ -70,6 +82,10 @@ impl FromStr for BuildinCmd<'_> {
             "echo" => Ok(Self::Echo(
                 iter.map(|v| Cow::Owned(v.trim().to_owned())).collect(),
             )),
+            "type" => {
+                let arg = iter.next();
+                Ok(Self::Type(Cow::Owned(arg.unwrap_or_default().to_owned())))
+            }
             _ => err,
         }
     }
