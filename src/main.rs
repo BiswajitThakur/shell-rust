@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
 use std::io::{self, Write};
-use std::{borrow::Cow, str::FromStr};
+use std::{borrow::Cow, fs, str::FromStr};
 
 fn main() -> io::Result<()> {
     let mut stdout = io::stdout().lock();
@@ -28,6 +28,16 @@ enum BuildinCmd<'a> {
     Type(Cow<'a, str>),
 }
 
+impl From<&BuildinCmd<'_>> for &str {
+    fn from(value: &BuildinCmd) -> Self {
+        match value {
+            BuildinCmd::Exit(_) => "exit",
+            BuildinCmd::Echo(_) => "echo",
+            BuildinCmd::Type(_) => "type",
+        }
+    }
+}
+
 impl ExecuteCmd for BuildinCmd<'_> {
     fn execute<W: io::Write>(&self, stdout: &mut W) -> io::Result<()> {
         match self {
@@ -42,16 +52,25 @@ impl ExecuteCmd for BuildinCmd<'_> {
                 }
                 writeln!(stdout)?;
             }
-            Self::Type(cmd) => {
-                if let Ok(v) = Self::from_str(cmd) {
-                    match v {
-                        Self::Exit(_) => writeln!(stdout, "exit is a shell builtin")?,
-                        Self::Echo(_) => writeln!(stdout, "echo is a shell builtin")?,
-                        Self::Type(_) => writeln!(stdout, "type is a shell builtin")?,
-                    }
-                } else {
-                    writeln!(stdout, "{}: not found", cmd)?;
+            Self::Type(arg) => {
+                if let Ok(ref v) = BuildinCmd::from_str(arg) {
+                    let v: &str = v.into();
+                    writeln!(stdout, "{} is a shell builtin", v)?;
+                    return Ok(());
                 }
+                let env = std::env::var("PATH").unwrap();
+                for path in env.split(':') {
+                    for entry in fs::read_dir(path)? {
+                        let dir = entry?;
+                        let file = dir.file_name();
+                        let name = file.to_string_lossy();
+                        if name == *arg {
+                            writeln!(stdout, "{} is {}", arg, dir.path().to_string_lossy())?;
+                            return Ok(());
+                        }
+                    }
+                }
+                writeln!(stdout, "{}: not found", arg)?;
             }
         }
         Ok(())
