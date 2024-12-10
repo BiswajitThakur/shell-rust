@@ -26,6 +26,7 @@ enum BuildinCmd<'a> {
     Exit(i32),
     Echo(Vec<Cow<'a, str>>),
     Type(Cow<'a, str>),
+    Pwd,
 }
 
 impl From<&BuildinCmd<'_>> for &str {
@@ -34,6 +35,7 @@ impl From<&BuildinCmd<'_>> for &str {
             BuildinCmd::Exit(_) => "exit",
             BuildinCmd::Echo(_) => "echo",
             BuildinCmd::Type(_) => "type",
+            BuildinCmd::Pwd => "pwd",
         }
     }
 }
@@ -63,6 +65,10 @@ impl ExecuteCmd for BuildinCmd<'_> {
                     return Ok(());
                 }
                 writeln!(stdout, "{}: not found", arg)?;
+            }
+            Self::Pwd => {
+                let pwd = std::env::current_dir()?;
+                writeln!(stdout, "{}", pwd.to_string_lossy())?;
             }
         }
         Ok(())
@@ -97,6 +103,7 @@ impl FromStr for BuildinCmd<'_> {
                 let arg = iter.next();
                 Ok(Self::Type(Cow::Owned(arg.unwrap_or_default().to_owned())))
             }
+            "pwd" => Ok(Self::Pwd),
             _ => err,
         }
     }
