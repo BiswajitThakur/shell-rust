@@ -73,7 +73,10 @@ impl ExecuteCmd for BuildinCmd<'_> {
                 writeln!(stdout, "{}", pwd.to_string_lossy())?;
             }
             Self::Cd(path) => {
-                if std::env::set_current_dir(PathBuf::from_str(path).unwrap()).is_err() {
+                if *path == "~" {
+                    let home = std::env::var("HOME").unwrap();
+                    std::env::set_current_dir(home)?;
+                } else if std::env::set_current_dir(PathBuf::from_str(path).unwrap()).is_err() {
                     writeln!(stdout, "cd: {}: No such file or directory", path)?;
                 }
             }
