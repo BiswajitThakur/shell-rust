@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
 use std::io::{self, Write};
-use std::{borrow::Cow, fs, str::FromStr};
+use std::{borrow::Cow, fs, process, str::FromStr};
 
 fn main() -> io::Result<()> {
     let mut stdout = io::stdout().lock();
@@ -58,17 +58,9 @@ impl ExecuteCmd for BuildinCmd<'_> {
                     writeln!(stdout, "{} is a shell builtin", v)?;
                     return Ok(());
                 }
-                let env = std::env::var("PATH").unwrap();
-                for path in env.split(':') {
-                    for entry in fs::read_dir(path)? {
-                        let dir = entry?;
-                        let file = dir.file_name();
-                        let name = file.to_string_lossy();
-                        if name == *arg {
-                            writeln!(stdout, "{} is {}", arg, dir.path().to_string_lossy())?;
-                            return Ok(());
-                        }
-                    }
+                if let Some(v) = find_path(arg) {
+                    writeln!(stdout, "{} is {}", arg, v)?;
+                    return Ok(());
                 }
                 writeln!(stdout, "{}: not found", arg)?;
             }
@@ -138,8 +130,30 @@ impl FromStr for Cmd<'_> {
 impl ExecuteCmd for Cmd<'_> {
     fn execute<W: io::Write>(&self, stdout: &mut W) -> io::Result<()> {
         match self {
-            Self::Buildin(cmd) => cmd.execute(stdout),
-            Self::Other(cmd, _) => writeln!(stdout, "{}: not found", cmd),
+            Self::Buildin(cmd) => cmd.execute(stdout)?,
+            Self::Other(cmd, arg) => {
+                if let Some(path) = find_path(cmd) {
+                    process::Command::new(path).arg(arg.join(" ")).status()?;
+                } else {
+                    writeln!(stdout, "{}: not found", cmd)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn find_path<T: AsRef<str>>(value: T) -> Option<String> {
+    let env = std::env::var("PATH").unwrap();
+    for path in env.split(':') {
+        for entry in fs::read_dir(path).ok()? {
+            let dir = entry.ok()?;
+            let file = dir.file_name();
+            let name = file.to_string_lossy();
+            if name == *value.as_ref() {
+                return Some(dir.path().to_string_lossy().to_string());
+            }
         }
     }
+    None
 }
