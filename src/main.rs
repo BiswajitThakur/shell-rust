@@ -208,6 +208,7 @@ impl<'a> From<&'a str> for Cmd<'a> {
 
 fn parse_args<'a>(value: &'a str) -> Vec<Cow<'a, str>> {
     let mut v: Vec<Cow<'a, str>> = Vec::new();
+    let value = value.trim_start();
     let mut iter = value.chars().enumerate().peekable();
     while let Some((index, c)) = iter.next() {
         match c {
@@ -253,6 +254,7 @@ fn parse_args<'a>(value: &'a str) -> Vec<Cow<'a, str>> {
                     let i = *i;
                     if *c == '\\' {
                         iter.next();
+                        iter.next();
                         continue;
                     }
                     if c.is_whitespace() || matches!(*c, '"' | '\'') {
@@ -266,7 +268,12 @@ fn parse_args<'a>(value: &'a str) -> Vec<Cow<'a, str>> {
                     if iter.peek().is_none() {
                         let end = i + 1;
                         if index < end {
-                            v.push(Cow::Borrowed(&value[index..end]));
+                            let s = &value[index..end];
+                            if s.contains("\\") {
+                                v.push(Cow::Owned(s.replace("\\", "")));
+                            } else {
+                                v.push(Cow::Borrowed(s));
+                            }
                         }
                     }
                 }
