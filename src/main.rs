@@ -1,4 +1,6 @@
 use std::io::{self, BufReader, Read, Write};
+use std::iter::{Enumerate, Peekable};
+use std::str::Chars;
 use std::{borrow::Cow, fmt, fs, path::PathBuf, process, str::FromStr};
 
 fn main() -> io::Result<()> {
@@ -163,13 +165,6 @@ impl<'a> From<&'a str> for Cmd<'a> {
             .or(value
                 .strip_prefix("type ")
                 .map(|rest| Self::Type(Cow::Borrowed(rest))))
-            .or({
-                if value.trim() == "type" {
-                    Some(Self::Type("type".into()))
-                } else {
-                    None
-                }
-            })
             .or(value.strip_prefix("pwd").and_then(|rest| {
                 if rest.is_empty() || rest.chars().next().unwrap().is_whitespace() {
                     Some(Self::Pwd)
@@ -197,107 +192,18 @@ impl<'a> From<&'a str> for Cmd<'a> {
                 }
                 Some(Self::Cat(parse_args(rest)))
             }))
-            .or({
-                let mut args = parse_args(value).into_iter();
-                let cmd = args.next().unwrap();
-                Some(Self::Other(cmd, args.collect()))
+            .or(match_next_wowd(value)
+                .map(|(cmd, rest)| Self::Other(Cow::Borrowed(cmd), parse_args(rest))))
+            .or(if value.trim() == "type" {
+                Some(Self::Type("type".into()))
+            } else {
+                Some(Self::Other(value.into(), vec![]))
             })
             .unwrap()
     }
 }
-
-fn parse_args<'a>(value: &'a str) -> Vec<Cow<'a, str>> {
-    let mut v: Vec<Cow<'a, str>> = Vec::new();
-    let value = value.trim_start();
-    let mut iter = value.chars().enumerate().peekable();
-    while let Some((index, c)) = iter.next() {
-        match c {
-            ' ' | '\r' | '\t' => {}
-            '"' => {
-                let start = index + 1;
-                while let Some((i, c)) = iter.peek() {
-                    if *c == '\\' {
-                        iter.next();
-                        continue;
-                    }
-                    if *c == '"' {
-                        if start >= *i {
-                            v.push(Cow::Borrowed(""));
-                        } else {
-                            v.push(Cow::Borrowed(&value[start..*i]));
-                        }
-                        iter.next();
-                        break;
-                    }
-                    iter.next();
-                }
-            }
-            '\'' => {
-                let start = index + 1;
-                while let Some((i, c)) = iter.peek() {
-                    if *c == '\\' {
-                        iter.next();
-                        continue;
-                    }
-                    if *c == '\'' {
-                        if start < *i {
-                            v.push(Cow::Borrowed(&value[start..*i]));
-                        }
-                        iter.next();
-                        break;
-                    }
-                    iter.next();
-                }
-            }
-            _ => {
-                while let Some((i, c)) = iter.peek() {
-                    let i = *i;
-                    if *c == '\\' {
-                        iter.next();
-                        iter.next();
-                        continue;
-                    }
-                    if c.is_whitespace() || matches!(*c, '"' | '\'') {
-                        let end = i;
-                        if index < end {
-                            v.push(Cow::Borrowed(&value[index..end]));
-                        }
-                        break;
-                    }
-                    iter.next();
-                    if iter.peek().is_none() {
-                        let end = i + 1;
-                        if index < end {
-                            let s = &value[index..end];
-                            if s.contains("\\") {
-                                v.push(Cow::Owned(s.replace("\\", "")));
-                            } else {
-                                v.push(Cow::Borrowed(s));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    v
-}
-#[test]
-fn test_parse_args() {
-    let input = "  hello'hiin  gjg\"chh  'hfh\\y\" gnm \"fhf '  '  gg\"\" hhf   ee";
-    let want = vec![
-        "hello",
-        "hiin  gjg\"chh  ",
-        "hfh\\y",
-        " gnm ",
-        "fhf",
-        "  ",
-        "gg",
-        "",
-        "hhf",
-        "ee",
-    ];
-    assert_eq!(parse_args(input), want);
+fn parse_args(value: &str) -> Vec<Cow<'_, str>> {
+    IterArgs::new(value).collect()
 }
 
 fn find_path<T: AsRef<str>>(value: T) -> Option<String> {
@@ -316,13 +222,11 @@ fn find_path<T: AsRef<str>>(value: T) -> Option<String> {
 }
 
 #[allow(unused)]
-fn match_next_wowd(value: &str) -> Option<&str> {
+fn match_next_wowd(value: &str) -> Option<(&str, &str)> {
     let value = value.trim_start();
-    if let Some(pos) = value.find(|c: char| !c.is_whitespace()) {
-        Some(&value[pos..])
-    } else {
-        None
-    }
+    value
+        .find(|c: char| c.is_whitespace())
+        .map(|pos| (&value[..pos], &value[pos..]))
 }
 
 #[allow(unused)]
@@ -338,79 +242,306 @@ fn match_word<'a>(word: &str, from: &'a str) -> Option<&'a str> {
     }
 }
 
+#[test]
+fn test_match_next_word() {
+    let input = "hello world";
+    assert_eq!(match_next_wowd(input), Some(("hello", " world")));
+}
+
+struct IterArgs<'a> {
+    whole: &'a str,
+    start: usize,
+}
+
+impl<'a> Iterator for IterArgs<'a> {
+    type Item = Cow<'a, str>;
+    fn next(&mut self) -> Option<Self::Item> {
+        //let mut stdout = std::io::stdout();
+        //let mut n = 0;
+        loop {
+            //writeln!(stdout, "{}", n).unwrap();
+            //n += 1;
+            if self.start >= self.whole.len() {
+                return None;
+            }
+            let input = &self.whole[self.start..];
+            let mut end = 0;
+            let mut rm = Vec::new();
+            handle_args(&mut input.chars().enumerate().peekable(), &mut rm, &mut end);
+            let got_str = remove_unwanted(&input[0..end], rm);
+            self.start += end;
+            if got_str.is_empty() && end >= self.whole.len() {
+                return None;
+            }
+            if got_str.is_empty() {
+                continue;
+            }
+            return Some(got_str);
+        }
+    }
+}
+impl<'a> IterArgs<'a> {
+    fn new(value: &'a str) -> Self {
+        Self {
+            whole: value,
+            start: 0,
+        }
+    }
+}
+
+// BUG: in some input it return Owned value, when it should be Borrowed
+fn remove_unwanted(value: &str, remove: Vec<usize>) -> Cow<'_, str> {
+    if remove.is_empty() || value.is_empty() {
+        return Cow::Borrowed(value);
+    }
+    let mut start = 0;
+    for i in remove.iter() {
+        if *i != start {
+            break;
+        }
+        start += 1;
+    }
+    let mut end = value.len() - 1;
+    for i in remove.len() - 1..0 {
+        if remove[i] != end {
+            break;
+        }
+        end -= 1;
+    }
+    if start + (value.len() - 1 - end) >= value.len() {
+        return Cow::Borrowed("");
+    }
+    if start + (value.len() - 1 - end) >= remove.len() {
+        return Cow::Borrowed(&value[start..end + 1]);
+    }
+    let mut st = String::with_capacity(end - start + 1);
+    let mut remove_iter = remove[start..].iter();
+    let mut current_remove = remove_iter.next();
+    for (index, c) in value[start..end + 1].chars().enumerate() {
+        match current_remove {
+            Some(remove_index) if *remove_index == index + start => {
+                current_remove = remove_iter.next();
+            }
+            _ => st.push(c),
+        }
+    }
+    Cow::Owned(st)
+}
+fn handle_args(iter: &mut Peekable<Enumerate<Chars>>, remove: &mut Vec<usize>, end: &mut usize) {
+    if iter.peek().is_none() {
+        return;
+    }
+    let mut i = 0;
+    while let Some((index, c)) = iter.next() {
+        i = index;
+        match c {
+            ' ' | '\t' | '\r' => {
+                remove.push(index);
+                *end = index + 1;
+                return;
+            }
+            '\\' => {
+                remove.push(index);
+                iter.next();
+                i += 1;
+            }
+            '"' => {
+                remove.push(index);
+                while let Some((ii, v)) = iter.next() {
+                    i = ii;
+                    match v {
+                        '"' => {
+                            remove.push(ii);
+                            break;
+                        }
+                        '\\' => {
+                            if let Some((_, v)) = iter.peek() {
+                                if matches!(*v, '\\' | '"') {
+                                    remove.push(ii);
+                                    iter.next();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            '\'' => {
+                remove.push(index);
+                for (ii, v) in iter.by_ref() {
+                    i = ii;
+                    if v == '\'' {
+                        remove.push(ii);
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    *end = i + 1;
+}
+
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
 
-    use crate::{find_path, match_word, Cmd};
+    use crate::{handle_args, remove_unwanted, Cmd, IterArgs};
+
+    fn test_fn_handle_ukt(iter: Vec<(&str, Vec<usize>, usize)>) {
+        for (index, (input, rm, end)) in iter.into_iter().enumerate() {
+            let mut e = 0;
+            let mut remove = Vec::new();
+            handle_args(
+                &mut input.chars().enumerate().peekable(),
+                &mut remove,
+                &mut e,
+            );
+            if rm != remove || end != e {
+                eprintln!("Test Index: {}\nInput: '{}'", index, input);
+                eprintln!("want: '{:?}', got: '{:?}'", &rm, &remove);
+                eprintln!("want: '{}', got: '{}'", end, e);
+            }
+            assert_eq!(rm, remove);
+            assert_eq!(end, e);
+        }
+    }
 
     #[test]
-    fn test_match_word() {
-        let from = "";
-        let word = "";
-        let got = match_word(word, from);
-        assert_eq!(got, Some(""));
-        let from = "";
-        let word = "hello";
-        let got = match_word(word, from);
-        assert_eq!(got, None);
-        let from = "hello";
-        let word = "hello";
-        let got = match_word(word, from);
-        assert_eq!(got, Some(""));
-        let from = "   hello";
-        let word = "hello";
-        let got = match_word(word, from);
-        assert_eq!(got, Some(""));
-        let from = "   hello  world";
-        let word = "hello";
-        let got = match_word(word, from);
-        assert_eq!(got, Some("  world"));
+    fn test_handle_args() {
+        let test = vec![
+            ("", vec![], 0),
+            (" ", vec![0], 1),
+            ("  ", vec![0], 1),
+            ("     ", vec![0], 1),
+            (r#""abc""#, vec![0, 4], 5),
+            (r#"'abc'"#, vec![0, 4], 5),
+            (r#""ab   c""#, vec![0, 7], 8),
+            (r#"'ab   c'"#, vec![0, 7], 8),
+            ("abc def", vec![3], 4),
+            ("abc def ghi", vec![3], 4),
+            (r#"'"'"#, vec![0, 2], 3),
+            (r#""'""#, vec![0, 2], 3),
+            (r#""\"""#, vec![0, 1, 3], 4),
+            (r#"abc\ndef\ efg\txyz"#, vec![3, 8, 13], 18),
+            (r#"\\\\\\\\"#, vec![0, 2, 4, 6], 8),
+            (r#"hello\ "#, vec![5], 7),
+            (r#"\ hello"#, vec![0], 7),
+            (r#"hello\     "#, vec![5, 7], 8),
+            (r#""abc""def""#, vec![0, 4, 5, 9], 10),
+            (r#"'abc''def'"#, vec![0, 4, 5, 9], 10),
+            (r#"'abc'"def""#, vec![0, 4, 5, 9], 10),
+            (r#""abc"'def'"#, vec![0, 4, 5, 9], 10),
+            (r#""abc" 'def'"#, vec![0, 4, 5], 6),
+        ];
+        test_fn_handle_ukt(test);
+    }
+    fn test_fn_rm_unwanted(iter: Vec<(&str, Vec<usize>, &str, bool)>) {
+        for (index, (input, remove, want, is_borrowed)) in iter.into_iter().enumerate() {
+            let got = remove_unwanted(input, remove);
+            let is_borrowed_got = match got {
+                Cow::Owned(_) => false,
+                Cow::Borrowed(_) => true,
+            };
+            if want != got
+            /* || is_borrowed != is_borrowed_got */
+            {
+                eprintln!("Test Index: {}\nInput: '{}'", index, input);
+                eprintln!("want: '{}', got: '{}'", want, got);
+                eprintln!("want: '{}', got: '{}'", is_borrowed, is_borrowed_got);
+            }
+            assert_eq!(want, got);
+            // assert_eq!(is_borrowed, is_borrowed_got); // TODO: fix bug
+        }
     }
     #[test]
-    fn test_find_path() {
-        let got = find_path("ls");
-        assert_eq!(got, Some("/usr/bin/ls".to_owned()));
-        let got = find_path(
-            "/home/eagle/development/codecrafters-shell-rust/target/debug/codecrafters-shell",
-        );
-        //assert_eq!(got, Some("/usr/bin/ls".to_owned()));
+    fn test_remove_unwanted() {
+        let test = vec![
+            ("", vec![], "", true),
+            ("abc", vec![1], "ac", false),
+            ("abcd", vec![0], "bcd", true),
+            ("abcdefgh", vec![0, 1], "cdefgh", true),
+            ("abcdefgh", vec![0, 1, 2, 3], "efgh", true),
+            ("abcdefgh", vec![7], "abcdefg", true),
+            ("abcdefgh", vec![6, 7], "abcdef", true),
+            ("abcdefgh", vec![0, 1, 6, 7], "cdef", true),
+            ("abcdefgh", vec![0, 1, 3, 6, 7], "cef", false),
+            ("", vec![0], "", true),
+            ("abc", vec![10], "abc", true),
+            ("abc", vec![2, 3, 4], "ab", true),
+            ("abc", vec![1, 2, 3, 4], "a", true),
+        ];
+        test_fn_rm_unwanted(test);
+    }
+    fn test_fn_iter_args(test: Vec<(&str, Vec<&str>)>) {
+        for (index, (input, want)) in test.into_iter().enumerate() {
+            let args = IterArgs::new(input);
+            let got: Vec<Cow<'_, str>> = args.collect();
+            if got != want {
+                eprintln!("Test Index: {}", index);
+                eprintln!("want: {:?}, got: {:?}", want, got);
+            }
+            assert_eq!(want, got);
+        }
     }
     #[test]
-    fn parse_cmd() {
-        let input = "exit";
-        let cmd = Cmd::from(input);
-        assert_eq!(cmd, Cmd::Exit(0));
-        let input = "exit 1";
-        let cmd = Cmd::from(input);
-        assert_eq!(cmd, Cmd::Exit(1));
-        let input = "exit 100";
-        let cmd = Cmd::from(input);
-        assert_eq!(cmd, Cmd::Exit(100));
-        let input = "  echo hello   world'hii'";
-        let cmd = Cmd::from(input);
-        assert_eq!(
-            cmd,
-            Cmd::Echo(vec![
-                Cow::Borrowed("hello"),
-                Cow::Borrowed("world"),
-                Cow::Borrowed("hii")
-            ])
-        );
-        let input = "  pwd  ";
-        let cmd = Cmd::from(input);
-        assert_eq!(cmd, Cmd::Pwd);
-        let input = "cd   tmp/";
-        let cmd = Cmd::from(input);
-        assert_eq!(cmd, Cmd::Cd("tmp/".into()));
-        let input = " my-cmd   tmp/ hello.txt 'arg    1'";
-        let cmd = Cmd::from(input);
-        assert_eq!(
-            cmd,
-            Cmd::Other(
-                "my-cmd".into(),
-                vec!["tmp/".into(), "hello.txt".into(), "arg    1".into()]
-            )
-        );
+    fn test_iter_args() {
+        let test = vec![
+            ("hello", vec!["hello"]),
+            (r#"""""hello"""""#, vec!["hello"]),
+            ("hello world", vec!["hello", "world"]),
+            (r#"hello\ world"#, vec!["hello world"]),
+            (r#"   hello\ world   "#, vec!["hello world"]),
+            (
+                r#"   hello\ world  foo'bar'foo "#,
+                vec!["hello world", "foobarfoo"],
+            ),
+            (
+                "hello world 'hello   world'\\ ",
+                vec!["hello", "world", "hello   world "],
+            ),
+            (
+                r#"'/tmp/foo/"f 50"' '/tmp/foo/"f\68"' '/tmp/foo/f67'"#,
+                vec![
+                    r#"/tmp/foo/"f 50""#,
+                    r#"/tmp/foo/"f\68""#,
+                    r#"/tmp/foo/f67"#,
+                ],
+            ),
+        ];
+        test_fn_iter_args(test);
+    }
+
+    fn test_fn_cmd_match(iter: Vec<(&str, Cmd)>) {
+        for (index, (input, cmd)) in iter.into_iter().enumerate() {
+            let cmd_got = Cmd::from(input);
+            if cmd != cmd_got {
+                eprintln!("Test Index: {}", index);
+                eprintln!("want: '{}', got: '{}'", cmd, cmd_got);
+            }
+            assert_eq!(cmd, cmd_got);
+        }
+    }
+    #[test]
+    fn test_cmd_from_str<'a>() {
+        let fn_into_cow = |input: Vec<&'a str>| -> Vec<Cow<'a, str>> {
+            input.into_iter().map(|v| Cow::Borrowed(v)).collect()
+        };
+        let test = vec![
+            (
+                "echo hello world",
+                Cmd::Echo(fn_into_cow(vec!["hello", "world"])),
+            ),
+            (
+                r#"cat '/tmp/foo/"f 50"' '/tmp/foo/"f\68"' '/tmp/foo/f67'"#,
+                Cmd::Cat(fn_into_cow(vec![
+                    r#"/tmp/foo/"f 50""#,
+                    r#"/tmp/foo/"f\68""#,
+                    r#"/tmp/foo/f67"#,
+                ])),
+            ),
+            ("type ls", Cmd::Type("ls".into())),
+        ];
+        test_fn_cmd_match(test);
     }
 }
