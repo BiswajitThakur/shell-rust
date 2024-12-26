@@ -139,71 +139,21 @@ impl<'a> ExecuteCmd<'a> for Cmd<'a> {
 impl<'a> From<&'a str> for Cmd<'a> {
     fn from(value: &'a str) -> Self {
         let value = value.trim_start();
-        value
-            .strip_prefix("exit")
-            .and_then(|rest| {
-                if rest.trim_start().is_empty() {
-                    Some(Self::Exit(0))
-                } else if rest.chars().next().unwrap().is_whitespace() {
-                    let mut iter = rest.split_whitespace();
-                    let next_word = iter.next().unwrap_or_default();
-                    if iter.next().is_some() {
-                        panic!("exit: too many arguments")
-                    } else {
-                        Some(Self::Exit(next_word.parse().unwrap_or_default()))
-                    }
-                } else {
-                    None
-                }
-            })
-            .or(value.strip_prefix("echo").and_then(|rest| {
-                if !rest.is_empty() && !rest.chars().next().unwrap().is_whitespace() {
-                    return None;
-                }
-                Some(Self::Echo(parse_args(rest)))
-            }))
-            .or(value
-                .strip_prefix("type ")
-                .map(|rest| Self::Type(Cow::Borrowed(rest))))
-            .or(value.strip_prefix("pwd").and_then(|rest| {
-                if rest.is_empty() || rest.chars().next().unwrap().is_whitespace() {
-                    Some(Self::Pwd)
-                } else {
-                    None
-                }
-            }))
-            .or(value.strip_prefix("cd").and_then(|rest| {
-                if !rest.is_empty() && !rest.chars().next().unwrap().is_whitespace() {
-                    return None;
-                }
-                let args = parse_args(rest);
-                if args.len() > 1 {
-                    panic!("cd: too many arguments");
-                }
-                Some(Self::Cd(if args.is_empty() {
-                    Cow::Borrowed("~")
-                } else {
-                    args.into_iter().next().unwrap()
-                }))
-            }))
-            .or(value.strip_prefix("cat").and_then(|rest| {
-                if !rest.is_empty() && !rest.chars().next().unwrap().is_whitespace() {
-                    return None;
-                }
-                Some(Self::Cat(parse_args(rest)))
-            }))
-            .or(match_next_wowd(value)
-                .map(|(cmd, rest)| Self::Other(Cow::Borrowed(cmd), parse_args(rest))))
-            .or(if value.trim() == "type" {
-                Some(Self::Type("type".into()))
-            } else {
-                Some(Self::Other(value.into(), vec![]))
-            })
-            .unwrap()
+        let mut cmd_args = IterArgs::new(value);
+        let cmd = cmd_args.next().unwrap();
+        match cmd.as_ref() {
+            "exit" => {
+                let code = cmd_args.next().unwrap_or_default();
+                Self::Exit(code.parse().unwrap_or_default())
+            }
+            "echo" => Self::Echo(cmd_args.collect()),
+            "type" => Self::Type(cmd_args.next().unwrap_or_default()),
+            "pwd" => Self::Pwd,
+            "cd" => Self::Cd(cmd_args.next().unwrap_or(Cow::Borrowed("~"))),
+            "cat" => Self::Cat(cmd_args.collect()),
+            _ => Self::Other(cmd, cmd_args.collect()),
+        }
     }
-}
-fn parse_args(value: &str) -> Vec<Cow<'_, str>> {
-    IterArgs::new(value).collect()
 }
 
 fn find_path<T: AsRef<str>>(value: T) -> Option<String> {
@@ -219,33 +169,6 @@ fn find_path<T: AsRef<str>>(value: T) -> Option<String> {
         }
     }
     None
-}
-
-#[allow(unused)]
-fn match_next_wowd(value: &str) -> Option<(&str, &str)> {
-    let value = value.trim_start();
-    value
-        .find(|c: char| c.is_whitespace())
-        .map(|pos| (&value[..pos], &value[pos..]))
-}
-
-#[allow(unused)]
-fn match_word<'a>(word: &str, from: &'a str) -> Option<&'a str> {
-    let from = from.trim_start();
-    if word.len() > from.len() {
-        return None;
-    }
-    if &from[..word.len()] == word {
-        Some(&from[word.len()..])
-    } else {
-        None
-    }
-}
-
-#[test]
-fn test_match_next_word() {
-    let input = "hello world";
-    assert_eq!(match_next_wowd(input), Some(("hello", " world")));
 }
 
 struct IterArgs<'a> {
