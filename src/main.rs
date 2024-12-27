@@ -382,6 +382,7 @@ impl Redirection<'_> {
         match self.std_out.ops {
             RedirOps::Append => Ok(fs::OpenOptions::new()
                 .append(true)
+                .create(true)
                 .open(self.std_out.path.as_ref())?),
             RedirOps::Redirect => Ok(fs::File::create(self.std_out.path.as_ref())?),
         }
@@ -411,6 +412,12 @@ fn get_redirect_path<'a>(
                 if stdout_path.is_none() {
                     stdout_path = iter.next();
                     stdout_ops = Some(RedirOps::Redirect);
+                }
+            }
+            ">>" | "1>>" => {
+                if stderr_path.is_none() {
+                    stdout_path = iter.next();
+                    stdout_ops = Some(RedirOps::Append);
                 }
             }
             "2>" => {
