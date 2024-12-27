@@ -138,7 +138,6 @@ impl<'a> Cmd<'a> {
             }
             Self::Other(cmd, args) => {
                 if let Some(path) = find_path(cmd) {
-                    // process::Command::new(path).arg(args.join(" ")).status()?;
                     let mut child = process::Command::new(path)
                         .arg(args.join(" "))
                         .stdout(Stdio::from(out.stdout()?))
@@ -404,31 +403,38 @@ fn get_redirect_path<'a>(
     let mut iter = args.into_iter().peekable();
     let mut stdout_path = None;
     let mut stdout_ops = None;
-    let stdout_path_append: Option<Cow<'a, str>> = None;
+    let mut stderr_path = None;
+    let mut stderr_ops = None;
     while let Some(arg) = iter.next() {
         match arg.as_ref() {
             ">" | "1>" => {
-                if stdout_path.is_none() && stdout_path_append.is_none() {
-                    stdout_path = Some(iter.next().unwrap());
+                if stdout_path.is_none() {
+                    stdout_path = iter.next();
                     stdout_ops = Some(RedirOps::Redirect);
+                }
+            }
+            "2>" => {
+                if stderr_path.is_none() {
+                    stderr_path = iter.next();
+                    stderr_ops = Some(RedirOps::Redirect);
                 }
             }
             _ => args1.push(arg),
         }
     }
-    match stdout_path {
-        Some(path) => Ok((
-            Redirection {
-                std_out: RedirectPath {
-                    path,
-                    ops: stdout_ops.unwrap(),
-                },
-                std_err: RedirectPath::default_stderr(),
+    Ok((
+        Redirection {
+            std_out: RedirectPath {
+                path: stdout_path.unwrap_or(Cow::Borrowed("/dev/stdout")),
+                ops: stdout_ops.unwrap_or(RedirOps::Append),
             },
-            args1,
-        )),
-        None => Ok((Redirection::default(), args1)),
-    }
+            std_err: RedirectPath {
+                path: stderr_path.unwrap_or(Cow::Borrowed("/dev/stderr")),
+                ops: stderr_ops.unwrap_or(RedirOps::Append),
+            },
+        },
+        args1,
+    ))
 }
 
 #[cfg(test)]
