@@ -1,31 +1,30 @@
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::iter::{Enumerate, Peekable};
+use std::process::Stdio;
 use std::str::Chars;
 use std::{borrow::Cow, fmt, fs, path::PathBuf, process, str::FromStr};
 
 fn main() -> io::Result<()> {
-    let mut stdout = io::stdout().lock();
     let stdin = io::stdin();
-    write!(stdout, "$ ")?;
-    stdout.flush()?;
+    print!("$ ");
+    io::stdout().flush()?;
 
     for line in stdin.lines() {
         let line = line?;
-        if !line.trim().is_empty() {
-            let cmd = Cmd::from(line.as_str());
-            cmd.execute(&mut stdout)?;
+        if line.trim().is_empty() {
+            print!("$ ");
+            io::stdout().flush()?;
+            continue;
         }
-        write!(stdout, "$ ")?;
-        stdout.flush()?;
+        let (redirect_path, args) = get_redirect_path(IterArgs::new(line.as_str()).collect())?;
+        let cmd = Cmd::from(args);
+        cmd.execute(redirect_path)?;
+        print!("$ ");
+        io::stdout().flush()?;
     }
     Ok(())
 }
 
-trait ExecuteCmd<'a> {
-    fn execute<W: io::Write>(&'a self, stdout: &mut W) -> io::Result<()>;
-}
-
-#[allow(unused)]
 #[derive(Debug, PartialEq, Eq)]
 enum Cmd<'a> {
     Exit(i32),
@@ -64,8 +63,10 @@ impl Cmd<'_> {
     }
 }
 
-impl<'a> ExecuteCmd<'a> for Cmd<'a> {
-    fn execute<W: io::Write>(&'a self, stdout: &mut W) -> io::Result<()> {
+impl<'a> Cmd<'a> {
+    fn execute(&'a self, out: Redirection<'_>) -> io::Result<()> {
+        let mut stdout = BufWriter::new(out.stdout()?);
+        let mut stderr = BufWriter::new(out.stderr()?);
         match self {
             Self::Exit(code) => std::process::exit(*code),
             Self::Echo(args) => {
@@ -112,7 +113,18 @@ impl<'a> ExecuteCmd<'a> for Cmd<'a> {
                         Cow::Borrowed(v) => *v,
                         Cow::Owned(v) => v,
                     };
-                    let file = fs::File::open(path)?;
+                    let file = match fs::File::open(path) {
+                        Ok(f) => f,
+                        _ => {
+                            stderr.write("cat: ".as_bytes()).unwrap();
+                            stderr.write(path.as_bytes()).unwrap();
+                            stderr
+                                .write(": No such file or directory\n".as_bytes())
+                                .unwrap();
+                            stderr.flush().unwrap();
+                            continue;
+                        }
+                    };
                     let mut reader = BufReader::new(file);
                     let mut buffer: [u8; 1024] = [0; 1024];
                     loop {
@@ -126,7 +138,13 @@ impl<'a> ExecuteCmd<'a> for Cmd<'a> {
             }
             Self::Other(cmd, args) => {
                 if let Some(path) = find_path(cmd) {
-                    process::Command::new(path).arg(args.join(" ")).status()?;
+                    // process::Command::new(path).arg(args.join(" ")).status()?;
+                    let mut child = process::Command::new(path)
+                        .arg(args.join(" "))
+                        .stdout(Stdio::from(out.stdout()?))
+                        .stderr(Stdio::from(out.stderr()?))
+                        .spawn()?;
+                    let _ = child.wait()?;
                 } else {
                     writeln!(stdout, "{}: command not found", cmd)?;
                 }
@@ -155,7 +173,24 @@ impl<'a> From<&'a str> for Cmd<'a> {
         }
     }
 }
-
+impl<'a> From<Vec<Cow<'a, str>>> for Cmd<'a> {
+    fn from(value: Vec<Cow<'a, str>>) -> Self {
+        let mut iter = value.into_iter();
+        let cmd = iter.next().unwrap();
+        match cmd.as_ref() {
+            "exit" => {
+                let code = iter.next().unwrap_or_default();
+                Self::Exit(code.parse().unwrap_or_default())
+            }
+            "echo" => Self::Echo(iter.collect()),
+            "type" => Self::Type(iter.next().unwrap_or_default()),
+            "pwd" => Self::Pwd,
+            "cd" => Self::Cd(iter.next().unwrap_or(Cow::Borrowed("~"))),
+            "cat" => Self::Cat(iter.collect()),
+            _ => Self::Other(cmd, iter.collect()),
+        }
+    }
+}
 fn find_path<T: AsRef<str>>(value: T) -> Option<String> {
     let env = std::env::var("PATH").unwrap();
     for path in env.split(':') {
@@ -179,11 +214,7 @@ struct IterArgs<'a> {
 impl<'a> Iterator for IterArgs<'a> {
     type Item = Cow<'a, str>;
     fn next(&mut self) -> Option<Self::Item> {
-        //let mut stdout = std::io::stdout();
-        //let mut n = 0;
         loop {
-            //writeln!(stdout, "{}", n).unwrap();
-            //n += 1;
             if self.start >= self.whole.len() {
                 return None;
             }
@@ -303,6 +334,101 @@ fn handle_args(iter: &mut Peekable<Enumerate<Chars>>, remove: &mut Vec<usize>, e
         }
     }
     *end = i + 1;
+}
+
+#[derive(Debug)]
+enum RedirOps {
+    Redirect,
+    Append,
+}
+
+#[derive(Debug)]
+struct RedirectPath<'a> {
+    path: Cow<'a, str>,
+    ops: RedirOps,
+}
+
+impl RedirectPath<'_> {
+    fn default_stdout() -> Self {
+        Self {
+            path: Cow::Borrowed("/dev/stdout"),
+            ops: RedirOps::Append,
+        }
+    }
+    fn default_stderr() -> Self {
+        RedirectPath {
+            path: Cow::Borrowed("/dev/stderr"),
+            ops: RedirOps::Append,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Redirection<'a> {
+    std_out: RedirectPath<'a>,
+    std_err: RedirectPath<'a>,
+}
+
+impl Default for Redirection<'_> {
+    fn default() -> Self {
+        Self {
+            std_out: RedirectPath::default_stdout(),
+            std_err: RedirectPath::default_stderr(),
+        }
+    }
+}
+
+impl Redirection<'_> {
+    fn stdout(&self) -> io::Result<fs::File> {
+        match self.std_out.ops {
+            RedirOps::Append => Ok(fs::OpenOptions::new()
+                .append(true)
+                .open(self.std_out.path.as_ref())?),
+            RedirOps::Redirect => Ok(fs::File::create(self.std_out.path.as_ref())?),
+        }
+    }
+    fn stderr(&self) -> io::Result<fs::File> {
+        match self.std_err.ops {
+            RedirOps::Append => Ok(fs::OpenOptions::new()
+                .append(true)
+                .open(self.std_err.path.as_ref())?),
+            RedirOps::Redirect => Ok(fs::File::create(self.std_err.path.as_ref())?),
+        }
+    }
+}
+
+fn get_redirect_path<'a>(
+    args: Vec<Cow<'a, str>>,
+) -> io::Result<(Redirection<'a>, Vec<Cow<'a, str>>)> {
+    let mut args1 = Vec::with_capacity(args.len());
+    let mut iter = args.into_iter().peekable();
+    let mut stdout_path = None;
+    let mut stdout_ops = None;
+    let stdout_path_append: Option<Cow<'a, str>> = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_ref() {
+            ">" | "1>" => {
+                if stdout_path.is_none() && stdout_path_append.is_none() {
+                    stdout_path = Some(iter.next().unwrap());
+                    stdout_ops = Some(RedirOps::Redirect);
+                }
+            }
+            _ => args1.push(arg),
+        }
+    }
+    match stdout_path {
+        Some(path) => Ok((
+            Redirection {
+                std_out: RedirectPath {
+                    path,
+                    ops: stdout_ops.unwrap(),
+                },
+                std_err: RedirectPath::default_stderr(),
+            },
+            args1,
+        )),
+        None => Ok((Redirection::default(), args1)),
+    }
 }
 
 #[cfg(test)]
